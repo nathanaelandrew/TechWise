@@ -69,7 +69,7 @@ def new_chat() -> None:
     ss.page = "chat"
 
 
-# model hook
+# --------------------------------------------------------------------------- model hook
 def get_techwise_reply(messages: list[dict]) -> dict:
     """Replace this with your LLM call (OpenAI, Gemini, Claude, …) using your system prompt.
 
@@ -206,14 +206,14 @@ def landing() -> None:
             with col:
                 html(f'<div class="tw-surf tw-card" style="margin-bottom:16px"><span class="tw-tag">{tag}</span><h3>{t}</h3><p>{d}</p></div>')
 
-    # closing CTA
-    html("""
-<div class="tw-surf" style="margin-top:40px;padding:64px 32px;text-align:center;border-radius:28px">
-<h2 style="font-size:48px;line-height:1.05;margin:0">Stop guessing.<br><span class="tw-dots">Start building.</span></h2>
-<p style="color:#A1A1AA;margin:14px 0 0">Free to use. No sign-up needed to ask your first question.</p></div>""")
-    _, c, _ = st.columns([2, 1, 2])
-    c.button("Ask TechWise →", type="primary", use_container_width=True, on_click=go_chat, key="cta")
-    html('<div style="height:24px"></div><p class="tw-fine">TechWise — a CS365 project by Group Veveco · Estimates only. Verify prices &amp; availability with official sources.</p>')
+    with st.container(key="tw_cta"):
+        html("""
+<div style="text-align:center">
+<h2 style="font-size:48px;line-height:1.05;margin:0;padding:0">Stop guessing.<br><span class="tw-dots">Start building.</span></h2>
+<p style="color:#A1A1AA;margin:14px 0 8px">Free to use. No sign-up needed to ask your first question.</p></div>""")
+        _, c, _ = st.columns([2, 1, 2])
+        c.button("Ask TechWise →", type="primary", use_container_width=True, on_click=go_chat, key="cta")
+    html('<p class="tw-fine" style="margin-top:32px">TechWise — a CS365 project by Group Veveco · Estimates only. Verify prices &amp; availability with official sources.</p>')
 
 
 # page: chat

@@ -151,6 +151,14 @@ code, .tw-mono {{ font-family: 'Geist Mono', monospace !important; }}
 .tw-decoder p {{ font-size:13px; line-height:1.55; color:#C9C9CF; margin:0; }}
 .tw-note {{ padding:14px; font-size:12px; line-height:1.6; color:var(--tw-muted); }}
 .tw-note b {{ color: var(--tw-text); font-size:13px; }}
+/* closing call-to-action card (st.container(key="tw_cta")) */
+.st-key-tw_cta {{
+  margin-top: 40px; padding: 64px 32px 56px; border-radius: 28px; gap: 20px;
+  background: var(--tw-surface); border: 1px solid rgba(255,255,255,.1);
+  background-image: radial-gradient(ellipse 50% 60% at 50% 0%, rgba({RGB},0.14), transparent 70%),
+                    linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,0) 45%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+}}
 .tw-fine {{ font-size:12px; color:var(--tw-faint); text-align:center; }}
 .tw-empty {{ text-align:center; display:flex; flex-direction:column; align-items:center; gap:12px; padding:24px 0 8px; }}
 .tw-empty .tw-logo-mark {{ width:60px; height:60px; border-radius:18px; box-shadow:0 0 50px var(--tw-glow); }}
