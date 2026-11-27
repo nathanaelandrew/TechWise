@@ -1,5 +1,6 @@
 import streamlit as st
 import techwise_ui as ui
+from techwise_backend import get_techwise_reply
 
 st.set_page_config(page_title="TechWise", page_icon="🖥️", layout="wide",
                    initial_sidebar_state="expanded")
@@ -11,12 +12,12 @@ def html(s: str) -> None:
     st.markdown("\n".join(line.strip() for line in s.strip().splitlines()), unsafe_allow_html=True)
 
 
-# data
+# data (used for the landing page preview card)
 SAMPLE_BUILD = {
     "title": "₱40K student gaming PC",
     "intro": ("₱40,000 is a great sweet spot for a student rig. This build handles schoolwork, "
               "programming and 1080p gaming without a major bottleneck between the CPU and GPU."),
-    "parts": [  # key, part, why, est. price (₱)  — placeholder prices, replace with real ones
+    "parts": [
         ("CPU", "AMD Ryzen 5 5600", "6 cores — smooth for games, coding and multitasking", 6500),
         ("GPU", "NVIDIA RTX 4060 8GB", "High settings at 1080p, efficient on power", 18500),
         ("MOBO", "MSI B550M PRO-VDH WIFI", "AM4 board with built-in Wi-Fi, room to upgrade", 5200),
@@ -47,6 +48,14 @@ CATEGORIES = [("Gaming", ":material/sports_esports:"), ("Programming", ":materia
               ("Video editing", ":material/movie:"), ("Office work", ":material/work:"),
               ("Phones & tablets", ":material/smartphone:")]
 
+CATEGORY_PROMPTS = {
+    "Gaming": "I'm looking for a Gaming PC or laptop setup. What are the best sweet-spot budgets right now in the Philippines?",
+    "Programming": "I need a laptop or PC for programming and schoolwork. What specs should I prioritize, and what do you recommend?",
+    "Video editing": "I need a setup for video editing and creative work. What specs matter most, and what are good options by budget?",
+    "Office work": "I'm looking for a reliable, affordable computer for office work and productivity. What are my best choices?",
+    "Phones & tablets": "I want to buy a smartphone or tablet. What are the best value picks in the Philippines across different budgets?",
+}
+
 QUICK_STARTS = ["Gaming PC under ₱40K", "Laptop for coding", "Best GPU for my budget", "Upgrade my PC"]
 
 
@@ -66,23 +75,8 @@ def go_chat(first_prompt: str | None = None) -> None:
 
 def new_chat() -> None:
     ss.messages = []
+    ss.category = None
     ss.page = "chat"
-
-
-# --------------------------------------------------------------------------- model hook
-def get_techwise_reply(messages: list[dict]) -> dict:
-    """Replace this with your LLM call (OpenAI, Gemini, Claude, …) using your system prompt.
-
-    `messages` is the chat history as [{"role", "content"}]. Return a dict:
-      {"content": "<markdown answer>", "build": <optional dict shaped like SAMPLE_BUILD>}
-    If your model returns plain markdown (including the parts table from your system prompt),
-    just return {"content": text} — the CSS styles markdown tables to match the design.
-    """
-    last = messages[-1]["content"].lower()
-    if any(w in last for w in ("pc", "build", "₱", "budget", "gaming")):
-        return {"content": SAMPLE_BUILD["intro"], "build": SAMPLE_BUILD}
-    return {"content": ("I can help with PC builds, laptops, phones and tablets, comparisons, "
-                        "or explaining any spec simply. What’s your budget and what will you use it for?")}
 
 
 # render: build card
@@ -116,7 +110,7 @@ def render_build(build: dict) -> None:
     html(f"""
 <div class="tw-surf" style="padding:16px;margin:14px 0">
 <div style="display:flex;justify-content:space-between;font-size:13px;flex-wrap:wrap;gap:8px">
-<b>Where your money goes</b><span style="color:#8B8B94">GPU gets the biggest share — right for gaming</span></div>
+<b>Where your money goes</b><span style="color:#8B8B94">Cost breakdown across components</span></div>
 <div class="tw-bar">{bar}</div><div class="tw-legend">{legend}</div></div>""")
 
     checks = "".join(f'<div class="tw-check">{ui.check_icon()}{c}</div>' for c in build["compat"])
@@ -224,13 +218,18 @@ def sidebar() -> None:
         st.button("New chat", icon=":material/add:", type="primary", use_container_width=True, on_click=new_chat)
         html('<div class="tw-side-label">Categories</div>')
         for name, icon in CATEGORIES:
-            if st.button(name, icon=icon, use_container_width=True, key=f"cat_{name}"):
+            is_active = ss.category == name
+            if st.button(name, icon=icon, type="primary" if is_active else "secondary",
+                         use_container_width=True, key=f"cat_{name}"):
                 ss.category = name
+                ss.messages = []
+                ss.pending_prompt = CATEGORY_PROMPTS[name]
+                st.rerun()
         html('<div class="tw-side-label">Navigate</div>')
         st.button("Home", icon=":material/home:", use_container_width=True,
                   on_click=lambda: ss.update(page="landing"))
         st.write("")
-        html(f"""<div class="tw-surf tw-note"><b>ⓘ Good to know</b><br>
+        html("""<div class="tw-surf tw-note"><b>ⓘ Good to know</b><br>
 Prices are estimates, not guaranteed<br>No purchases are made in chat<br>Recommendations are unsponsored</div>""")
 
 
@@ -265,7 +264,7 @@ def decoder_panel() -> None:
 
 def chat() -> None:
     sidebar()
-    title = next((m["build"]["title"] for m in ss.messages if m.get("build")), "New chat")
+    title = next((m["build"]["title"] for m in ss.messages if m.get("build")), ss.category or "New chat")
     h_l, h_r = st.columns([3, 1])
     h_l.markdown(f'<div style="font-size:15px;color:#C9C9CF;font-weight:500">{title}</div>', unsafe_allow_html=True)
     h_r.toggle("Beginner mode", value=True, key="beginner")
@@ -277,11 +276,17 @@ def chat() -> None:
     with main:
         if not ss.messages and "pending_prompt" not in ss:
             empty_state()
-        for m in ss.messages:
+        for idx, m in enumerate(ss.messages):
             with st.chat_message(m["role"], avatar=None if m["role"] == "user" else ":material/memory:"):
                 st.markdown(m["content"])
                 if m.get("build"):
                     render_build(m["build"])
+                if m.get("error") and idx == len(ss.messages) - 1 and len(ss.messages) >= 2:
+                    if st.button("↻ Retry", key=f"retry_{idx}"):
+                        ss.messages.pop()              # remove the error message
+                        last_user = ss.messages.pop()  # remove last prompt so it doesn't duplicate
+                        ss.pending_prompt = last_user["content"]
+                        st.rerun()
 
         prompt = ss.pop("pending_prompt", None)
         if prompt:
@@ -289,8 +294,17 @@ def chat() -> None:
             with st.chat_message("user"):
                 st.markdown(prompt)
             with st.chat_message("assistant", avatar=":material/memory:"), st.spinner("Thinking…"):
-                reply = get_techwise_reply([{"role": m["role"], "content": m["content"]} for m in ss.messages])
-            ss.messages.append({"role": "assistant", "content": reply["content"], "build": reply.get("build")})
+                reply = get_techwise_reply(
+                    [{"role": m["role"], "content": m["content"]} for m in ss.messages],
+                    beginner_mode=ss.get("beginner", True),
+                    category=ss.get("category"),
+                )
+            ss.messages.append({
+                "role": "assistant",
+                "content": reply["content"],
+                "build": reply.get("build"),
+                "error": reply.get("error", False),
+            })
             st.rerun()
 
     if q := st.chat_input("Ask about budget, specs, or compare products…"):
