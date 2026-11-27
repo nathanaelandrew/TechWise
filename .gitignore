@@ -1,3 +1,24 @@
+# Virtual environment
+venv/
+.venv/
+ENV/
+
+# Streamlit secrets (API keys) - keeps config.toml tracked!
 .streamlit/secrets.toml
+.env
+.env.*
+
+# Local vector database (auto-generated on first run)
 chroma_db/
+
+# Python cache & build artifacts
 __pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+*.swp
