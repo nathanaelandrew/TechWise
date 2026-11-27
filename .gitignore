@@ -11,6 +11,7 @@ ENV/
 
 # Local vector database (auto-generated on first run)
 chroma_db/
+*.db
 
 # Python cache & build artifacts
 __pycache__/

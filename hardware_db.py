@@ -1,4 +1,4 @@
-"""Deterministic PC hardware catalog, compatibility checker, and budget optimizer."""
+"""Deterministic PC hardware catalog, compatibility checker, and budget optimizer (with optional peripherals)."""
 
 from itertools import product
 
@@ -89,6 +89,26 @@ CASES = [
      "why": "High-airflow ATX tower that fits even massive flagship GPUs"},
 ]
 
+MONITORS = [
+    {"name": '24" 1080p 100Hz IPS Monitor', "res": "1080p", "score": 55, "price": 4500,
+     "why": "Crisp budget IPS display for schoolwork, coding, and casual gaming"},
+    {"name": '24" 1080p 180Hz IPS Gaming Monitor', "res": "1080p", "score": 78, "price": 7200,
+     "why": "Fast high-refresh IPS panel for smooth esports and gaming"},
+    {"name": '27" 1440p 165Hz IPS Monitor', "res": "1440p", "score": 90, "price": 13500,
+     "why": "Sharp QHD workspace great for 1440p gaming, coding, and editing"},
+    {"name": '27" 4K IPS Monitor', "res": "4K", "score": 100, "price": 21000,
+     "why": "Ultra-sharp 4K display for creative work and high-res gaming"},
+]
+
+PERIPHS = [
+    {"name": "Wired Keyboard & Mouse Combo", "score": 45, "price": 1000,
+     "why": "Simple, reliable peripherals for everyday schoolwork and coding"},
+    {"name": "Mechanical Keyboard + Gaming Mouse + Headset", "score": 78, "price": 3200,
+     "why": "Tactile mechanical feel, accurate gaming sensor, and clear mic"},
+    {"name": "Wireless Mechanical KB + Pro Mouse + Headset", "score": 95, "price": 6500,
+     "why": "Clean wireless desk setup with low-latency peripherals"},
+]
+
 
 def is_compatible(cpu, gpu, mobo, ram, psu, case) -> tuple[bool, list[str]]:
     """Deterministic compatibility rule engine."""
@@ -115,22 +135,27 @@ def is_compatible(cpu, gpu, mobo, ram, psu, case) -> tuple[bool, list[str]]:
     return True, reasons
 
 
-def optimize_build(budget_php: int, use_case: str = "Gaming", resolution: str = "1080p") -> dict:
-    """Finds the highest-performing, 100% compatible PC build within budget_php."""
+def optimize_build(
+    budget_php: int,
+    use_case: str = "Gaming",
+    resolution: str = "1080p",
+    include_peripherals: bool = False,
+) -> dict:
+    """Finds the highest-performing, 100% compatible PC build (and optional peripherals) within budget_php."""
     use = use_case.lower()
+    is_gaming = any(k in use for k in ("gam", "esport", "fps"))
     is_editing = any(k in use for k in ("edit", "render", "creative", "3d"))
-    is_coding = any(k in use for k in ("program", "cod", "dev", "school", "office", "student"))
+    is_coding = any(k in use for k in ("program", "cod", "dev", "android", "studio", "school", "office", "student"))
 
-    best_score = -1.0
-    best_combo = None
-    best_compat = []
+    pc_budget_cap = budget_php - 5500 if include_peripherals else budget_php
+    valid_pcs = []
 
     for cpu, gpu, mobo, ram, ssd, psu, case in product(CPUS, GPUS, MOBOS, RAMS, SSDS, PSUS, CASES):
-        total = cpu["price"] + gpu["price"] + mobo["price"] + ram["price"] + ssd["price"] + psu["price"] + case["price"]
-        if total > budget_php:
+        pc_total = cpu["price"] + gpu["price"] + mobo["price"] + ram["price"] + ssd["price"] + psu["price"] + case["price"]
+        if pc_total > pc_budget_cap:
             continue
 
-        if budget_php >= 32000 and gpu["price"] == 0 and not is_coding:
+        if pc_budget_cap >= 32000 and gpu["price"] == 0 and (is_gaming or not is_coding):
             continue
 
         if gpu["price"] > 0 and abs(cpu["game"] - gpu["game"]) > 30:
@@ -140,30 +165,51 @@ def optimize_build(budget_php: int, use_case: str = "Gaming", resolution: str = 
         if not ok:
             continue
 
-        if is_editing:
-            score = gpu["edit"] * 0.45 + cpu["prod"] * 0.40 + (ram["gb"] / 32 * 100) * 0.15
+        if is_gaming and is_coding:
+            pc_score = gpu["game"] * 0.45 + cpu["prod"] * 0.35 + (ram["gb"] / 32 * 100) * 0.20
+        elif is_editing:
+            pc_score = gpu["edit"] * 0.45 + cpu["prod"] * 0.40 + (ram["gb"] / 32 * 100) * 0.15
             if "NVIDIA" in gpu["name"]:
-                score += 6
+                pc_score += 6
         elif is_coding:
-            score = cpu["prod"] * 0.45 + (ram["gb"] / 32 * 100) * 0.25 + gpu["game"] * 0.20 + (ssd["gb"] / 2000 * 100) * 0.10
+            pc_score = cpu["prod"] * 0.45 + (ram["gb"] / 32 * 100) * 0.25 + gpu["game"] * 0.20 + (ssd["gb"] / 2000 * 100) * 0.10
         else:
-            score = gpu["game"] * 0.55 + cpu["game"] * 0.30 + (ram["gb"] / 32 * 100) * 0.10 + (ssd["gb"] / 2000 * 100) * 0.05
-            if resolution == "1440p" and gpu["vram"] < 12 and budget_php >= 55000:
-                score -= 10
-            if resolution == "4K" and gpu["vram"] < 16 and budget_php >= 85000:
-                score -= 12
+            pc_score = gpu["game"] * 0.55 + cpu["game"] * 0.30 + (ram["gb"] / 32 * 100) * 0.10 + (ssd["gb"] / 2000 * 100) * 0.05
+            if resolution == "1440p" and gpu["vram"] < 12 and pc_budget_cap >= 55000:
+                pc_score -= 10
+            if resolution == "4K" and gpu["vram"] < 16 and pc_budget_cap >= 85000:
+                pc_score -= 12
 
-        score += (total / budget_php) * 3.0
+        valid_pcs.append((pc_score, pc_total, cpu, gpu, mobo, ram, ssd, psu, case, compat_list))
 
-        if score > best_score:
-            best_score = score
-            best_combo = (cpu, gpu, mobo, ram, ssd, psu, case, total)
-            best_compat = compat_list
+    if not valid_pcs:
+        min_budget = 24000 if include_peripherals else 22000
+        return optimize_build(min_budget, use_case, resolution, include_peripherals=include_peripherals)
 
-    if best_combo is None:
-        return optimize_build(22000, use_case, resolution)
+    chosen_mon = None
+    chosen_periph = None
 
-    cpu, gpu, mobo, ram, ssd, psu, case, total = best_combo
+    if include_peripherals:
+        best_score = -1.0
+        best_pick = None
+        for pc_score, pc_total, cpu, gpu, mobo, ram, ssd, psu, case, compat_list in valid_pcs:
+            for mon, periph in product(MONITORS, PERIPHS):
+                total = pc_total + mon["price"] + periph["price"]
+                if total > budget_php:
+                    continue
+                res_bonus = 6.0 if mon["res"] == resolution else -4.0
+                comb_score = pc_score * 0.75 + mon["score"] * 0.15 + periph["score"] * 0.10 + res_bonus + (total / budget_php) * 3.0
+                if comb_score > best_score:
+                    best_score = comb_score
+                    best_pick = (cpu, gpu, mobo, ram, ssd, psu, case, total, compat_list, mon, periph)
+
+        if best_pick is None:
+            return optimize_build(24000, use_case, resolution, include_peripherals=True)
+        cpu, gpu, mobo, ram, ssd, psu, case, total, best_compat, chosen_mon, chosen_periph = best_pick
+    else:
+        best_pc = max(valid_pcs, key=lambda x: x[0] + (x[1] / budget_php) * 3.0)
+        _, total, cpu, gpu, mobo, ram, ssd, psu, case, best_compat = best_pc
+
     est_draw = cpu["tdp"] + gpu["tdp"] + 100
     headroom = round((1 - est_draw / psu["wattage"]) * 100)
     pct_used = round(total / budget_php * 100)
@@ -177,6 +223,9 @@ def optimize_build(budget_php: int, use_case: str = "Gaming", resolution: str = 
         ("PSU", psu["name"], psu["why"], psu["price"]),
         ("CASE", case["name"], case["why"], case["price"]),
     ]
+    if chosen_mon and chosen_periph:
+        parts.append(("MON", chosen_mon["name"], chosen_mon["why"], chosen_mon["price"]))
+        parts.append(("GEAR", chosen_periph["name"], chosen_periph["why"], chosen_periph["price"]))
 
     upgrades = []
     if ram["gb"] < 32:
@@ -192,10 +241,11 @@ def optimize_build(budget_php: int, use_case: str = "Gaming", resolution: str = 
     if ssd["gb"] < 1000:
         upgrades.append("Add a 1TB NVMe SSD as your library grows")
 
+    set_label = "full setup (with monitor & peripherals)" if include_peripherals else "PC build"
     return {
-        "title": f"₱{budget_php // 1000}K {use_case.lower()} PC",
-        "intro": (f"Here is a verified, 100% compatible **₱{total:,}** build tailored for **{use_case}** at **{resolution}** "
-                  f"(within your ₱{budget_php:,} budget)."),
+        "title": f"₱{budget_php // 1000}K {use_case.lower()} {'full set' if include_peripherals else 'PC'}",
+        "intro": (f"Here is a verified, 100% compatible **₱{total:,}** {set_label} tailored for **{use_case}** "
+                  f"at **{resolution}** (within your ₱{budget_php:,} budget)."),
         "parts": parts,
         "stats": [
             ("Target", f"{resolution} · {use_case.split()[0]}"),

@@ -1,4 +1,6 @@
-"""TechWise LLM Agent connecting system prompt, RAG, Search API, and Deterministic Builder."""
+"""TechWise LLM Agent connecting system prompt, RAG, Search API, Deterministic Builder, and Offline Fallback.
+Uses ONLY free-tier models (Gemini Flash / Flash-Lite / Neon / Hydrogen and Groq Llama).
+"""
 
 import json
 import os
@@ -17,7 +19,7 @@ SYSTEM_PROMPT = """You are TechWise, an expert, approachable, and objective AI h
 - Communication Style: Clear and educational. Avoid gatekeeping or unnecessary technical elitism.
 
 2. Capabilities & Tools (ALWAYS use your tools when relevant):
-- `build_pc_within_budget`: Call this whenever the user asks for a desktop PC build or setup for a budget. When you call this tool, the app automatically renders an interactive parts table, budget breakdown, compatibility check, and upgrade path below your message—so keep your text response as a helpful, concise explanation and DO NOT repeat a giant Markdown table in text!
+- `build_pc_within_budget`: Call this whenever the user asks for a desktop PC build or setup for a budget, OR when they ask to add a monitor/peripherals to a build. Set `include_peripherals=True` whenever they want a monitor, keyboard, mouse, headset, or full setup included in the budget. When you call this tool, the app automatically renders an interactive parts table, budget breakdown, compatibility check, and upgrade path below your message—so keep your text response as a helpful, concise explanation and DO NOT repeat a giant Markdown table in text!
 - `check_parts_compatibility`: Call this when a user asks about upgrading an existing PC, checking bottlenecks, or whether parts work together.
 - `search_tech_knowledge`: Call this to retrieve verified hardware explanations, VRAM/DDR/PSU guidelines, and buying advice from TechWise's RAG knowledge base.
 - `web_search_prices_and_gadgets`: Call this when recommending laptops, smartphones, tablets, peripherals, or checking current live Philippine prices (e.g., Shopee/Lazada/Datablitz/Bermor) and latest releases.
@@ -36,13 +38,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "build_pc_within_budget",
-            "description": "Generates a 100% compatible, budget-optimized desktop PC parts list in Philippine Pesos (₱).",
+            "description": "Generates a 100% compatible, budget-optimized desktop PC parts list (with optional monitor & peripherals) in Philippine Pesos (₱).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "budget_php": {"type": "integer", "description": "User's budget in Philippine Pesos (e.g. 40000)."},
-                    "use_case": {"type": "string", "description": "Primary use: Gaming, Programming, Video editing, or School & office."},
-                    "resolution": {"type": "string", "description": "Target display resolution: 1080p, 1440p, or 4K."}
+                    "budget_php": {"type": "integer", "description": "User's budget in Philippine Pesos (e.g. 60000)."},
+                    "use_case": {"type": "string", "description": "Primary use (e.g. Gaming, Programming, Gaming & Programming, Video editing, or School & office)."},
+                    "resolution": {"type": "string", "description": "Target display resolution: 1080p, 1440p, or 4K."},
+                    "include_peripherals": {"type": "boolean", "description": "Set true if the user wants a monitor, keyboard, mouse, or peripherals included in the budget."}
                 },
                 "required": ["budget_php"]
             }
@@ -93,6 +96,12 @@ TOOLS = [
     }
 ]
 
+_DEAD_MODELS: set[str] = set()
+
+
+def _clean_err(err: Exception | str) -> str:
+    return re.sub(r"key=[^&\s'\"]+", "key=***", str(err))
+
 
 def _get_secret(name: str) -> str | None:
     try:
@@ -112,6 +121,7 @@ def _execute_tool(fn_name: str, args: dict, tavily_key: str | None) -> tuple[str
             budget_php=int(args.get("budget_php", 40000)),
             use_case=args.get("use_case", "Gaming"),
             resolution=args.get("resolution", "1080p"),
+            include_peripherals=bool(args.get("include_peripherals", False)),
         )
         return json.dumps(build, ensure_ascii=False), build
 
@@ -132,23 +142,73 @@ def _execute_tool(fn_name: str, args: dict, tavily_key: str | None) -> tuple[str
     return "Unknown tool.", None
 
 
-def _get_gemini_candidates(api_key: str) -> list[str]:
-    """Builds an ordered list of Gemini models, starting with newest 3.x/2.x flash models."""
-    explicit_first = [
-        "gemini-4-hydrogen",
-        "gemini-3.8-flash",
-        "gemini-3.0-flash",
-        "gemini-3-flash",
-        "gemini-3-flash-preview",
-        "gemini-2.0-flash",
-        "gemini-2.5-flash",
-    ]
+def _extract_budget(text: str) -> int | None:
+    if m := re.search(r"(\d+(?:\.\d+)?)\s*k\b", text, re.I):
+        return int(float(m.group(1)) * 1000)
+    if m := re.search(r"\b(\d{2,3}(?:,\d{3})+|\d{5,6})\b", text):
+        return int(m.group(1).replace(",", ""))
+    return None
 
+
+def _local_smart_fallback(messages: list[dict], category: str | None = None, reason: str = "") -> dict:
+    """Handles user prompts locally via Deterministic Builder + ChromaDB RAG if cloud AI fails."""
+    user_text = messages[-1]["content"]
+    low = user_text.lower()
+    budget = _extract_budget(user_text)
+    note = f"\n\n*(Local fallback active — reason: `{reason[:140]}`)*" if reason else ""
+
+    wants_periph = any(k in low for k in ("monitor", "peripheral", "keyboard", "mouse", "headset", "full set", "complete set"))
+    if budget is None and wants_periph:
+        for m in reversed(messages[:-1]):
+            if m["role"] == "user":
+                if prev_b := _extract_budget(m["content"]):
+                    budget = prev_b
+                    break
+
+    wants_pc = any(k in low for k in ("pc", "build", "desktop", "rig", "system unit", "setup")) or wants_periph
+    not_pc = any(k in low for k in ("laptop", "phone", "smartphone", "tablet", "ipad", "fps", "valo"))
+    if (wants_pc or budget) and not not_pc:
+        use_parts = []
+        if any(k in low for k in ("gam", "fps", "esport")):
+            use_parts.append("Gaming")
+        if any(k in low for k in ("program", "cod", "dev", "android", "studio", "school")):
+            use_parts.append("Programming")
+        if any(k in low for k in ("edit", "render", "video", "premiere")):
+            use_parts.append("Video editing")
+        use_case = " & ".join(use_parts) if use_parts else (category or "Gaming")
+
+        res = "4K" if "4k" in low else ("1440p" if "1440" in low else "1080p")
+        build = hw.optimize_build(
+            budget_php=budget or 40000,
+            use_case=use_case,
+            resolution=res,
+            include_peripherals=wants_periph,
+        )
+        rag_tips = rag.query_rag(user_text, n_results=2)
+        return {"content": f"{build['intro']}\n\n**Key Hardware Notes:**\n{rag_tips}{note}", "build": build}
+
+    if any(k in low for k in ("bottleneck", "compatib", "upgrade", "psu", "watt")):
+        psu_match = re.search(r"(\d{3,4})\s*w\b", low)
+        compat_out = hw.check_custom_parts(
+            cpu_query=user_text,
+            gpu_query=user_text,
+            psu_wattage=int(psu_match.group(1)) if psu_match else 0,
+        )
+        rag_tips = rag.query_rag(user_text, n_results=2)
+        return {"content": f"**Compatibility & Upgrade Check:**\n{compat_out}\n\n**Hardware Guidelines:**\n{rag_tips}{note}"}
+
+    rag_tips = rag.query_rag(user_text, n_results=3)
+    return {"content": f"Here is what I found from TechWise's hardware knowledge base:\n\n{rag_tips}{note}"}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_free_gemini_models(api_key: str) -> list[str]:
+    """Fetches and ranks ONLY free-tier Gemini models (Flash, Flash-Lite, Neon, Hydrogen); excludes paid Pro/Ultra."""
     r = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}", timeout=15)
     if not r.ok:
         raise RuntimeError(f"Gemini key check failed (HTTP {r.status_code}): {r.text[:300]}")
 
-    skip_words = ("embedding", "imagen", "veo", "tts", "audio", "robotics", "computer-use", "aqa")
+    skip_words = ("embedding", "imagen", "veo", "tts", "audio", "robotics", "computer-use", "aqa", "live", "deep-research")
     discovered = []
     for m in r.json().get("models", []):
         if "generateContent" not in m.get("supportedGenerationMethods", []):
@@ -157,49 +217,76 @@ def _get_gemini_candidates(api_key: str) -> list[str]:
         low = name.lower()
         if "gemini" not in low or any(w in low for w in skip_words):
             continue
+        if re.search(r"(^|[-_/])(pro|ultra)([-_/]|$)", low):
+            continue
         discovered.append(name)
 
     def _rank(name: str) -> tuple:
         low = name.lower()
         ver_match = re.search(r"gemini-(\d+(?:\.\d+)?)", low)
         ver = float(ver_match.group(1)) if ver_match else 0.0
-        is_flash = 2 if ("flash" in low and "lite" not in low) else (1 if "flash" in low else 0)
+        is_fast_free = 3 if ("flash" in low and "lite" not in low) else (2 if ("flash-lite" in low or "neon" in low) else 1)
         is_stable = 1 if ("exp" not in low and "preview" not in low) else 0
-        return (ver, is_flash, is_stable, name)
+        return (is_fast_free, ver, is_stable, name)
+
+    return sorted(discovered, key=_rank, reverse=True)
+
+
+def _get_gemini_candidates(api_key: str) -> list[str]:
+    """Returns real, free-tier Gemini models in priority order."""
+    discovered = _fetch_free_gemini_models(api_key)
+    preferred = ["gemini-3.8-flash", "gemini-4-neon", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-4-hydrogen"]
 
     ordered = []
     cached = st.session_state.get("_gemini_model")
-    if cached:
+    if cached and cached in discovered and cached not in _DEAD_MODELS:
         ordered.append(cached)
-    for m in explicit_first + sorted(discovered, key=_rank, reverse=True):
-        if m not in ordered:
+
+    for m in preferred + discovered:
+        if m in discovered and m not in _DEAD_MODELS and m not in ordered:
             ordered.append(m)
+
+    if not ordered:
+        raise RuntimeError("No free-tier Gemini models available for this API key.")
     return ordered
 
 
 def _post_gemini_with_fallback(api_key: str, candidates: list[str], payload: dict) -> tuple[dict, str]:
-    """Posts to Gemini generateContent, falling back across models on 404, 429, or 503."""
+    """Posts to Gemini generateContent, skipping dead 404s and falling back on timeouts/429/503."""
     tried = []
     last_msg = ""
-    for model in candidates[:12]:
+    for model in candidates[:10]:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        r = requests.post(url, json=payload, timeout=45)
+        try:
+            r = requests.post(url, json=payload, timeout=15)
+        except requests.exceptions.Timeout:
+            if st.session_state.get("_gemini_model") == model:
+                st.session_state.pop("_gemini_model", None)
+            tried.append(f"{model} (timeout)")
+            last_msg = f"Timed out waiting for {model}"
+            continue
         if r.ok:
             st.session_state["_gemini_model"] = model
             return r.json(), model
-        if r.status_code in (404, 429, 500, 503):
+        if st.session_state.get("_gemini_model") == model:
+            st.session_state.pop("_gemini_model", None)
+        if r.status_code == 404:
+            _DEAD_MODELS.add(model)
+            tried.append(f"{model} (404)")
+            if not last_msg:
+                last_msg = f"HTTP 404 ({model}): {r.text[:200]}"
+            continue
+        if r.status_code in (400, 429, 500, 503) and "API_KEY" not in r.text:
             tried.append(f"{model} ({r.status_code})")
-            # Prefer keeping real 429/503 outage messages over 404 deprecation messages
-            if r.status_code != 404 or not last_msg:
-                last_msg = f"HTTP {r.status_code} ({model}): {r.text[:250]}"
+            last_msg = f"HTTP {r.status_code} ({model}): {r.text[:200]}"
             continue
         raise RuntimeError(f"HTTP {r.status_code} ({model}): {r.text[:300]}")
 
-    raise RuntimeError(f"No available model succeeded. Tried: {', '.join(tried)}. Details: {last_msg}")
+    raise RuntimeError(f"Tried {', '.join(tried)}. {last_msg}")
 
 
 def _run_gemini(api_key: str, system_text: str, messages: list[dict], tavily_key: str | None) -> dict:
-    """Uses Google's native Gemini REST API with function calling and automatic model fallback."""
+    """Uses Google's native Gemini REST API with function calling and automatic free-model fallback."""
     candidates = _get_gemini_candidates(api_key)
 
     contents = [
@@ -217,14 +304,13 @@ def _run_gemini(api_key: str, system_text: str, messages: list[dict], tavily_key
             "generationConfig": {"temperature": 0.3},
         }
         data, active_model = _post_gemini_with_fallback(api_key, candidates, payload)
-        # Lock onto the working model for subsequent tool turns
-        candidates = [active_model]
+        candidates = [active_model] + [c for c in candidates if c != active_model]
 
         cand_list = data.get("candidates", [])
         if not cand_list:
             return {"content": "I couldn't generate a response for that prompt. Please try rephrasing.", "build": generated_build}
 
-        cand_content = cand_list[0]["content"]
+        cand_content = cand_list[0].get("content", {})
         parts = cand_content.get("parts", [])
         calls = [p["functionCall"] for p in parts if "functionCall" in p]
 
@@ -247,14 +333,15 @@ def _run_gemini(api_key: str, system_text: str, messages: list[dict], tavily_key
     return {"content": "I ran into too many lookup steps. Could you rephrase your question?", "build": generated_build}
 
 
-def _run_openai_compat(client: OpenAI, model: str, system_text: str, messages: list[dict], tavily_key: str | None) -> dict:
-    """Runs tool-calling loop for Groq or OpenAI."""
+def _run_groq(api_key: str, system_text: str, messages: list[dict], tavily_key: str | None) -> dict:
+    """Runs tool-calling loop using Groq's free tier."""
+    client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
     convo = [{"role": "system", "content": system_text}] + messages
     generated_build = None
 
     for _ in range(4):
         response = client.chat.completions.create(
-            model=model,
+            model="llama-3.3-70b-versatile",
             messages=convo,
             tools=TOOLS,
             tool_choice="auto",
@@ -287,14 +374,19 @@ def get_techwise_reply(messages: list[dict], beginner_mode: bool = True, categor
     system_text = SYSTEM_PROMPT + mode_note + cat_note
     tavily_key = _get_secret("TAVILY_API_KEY")
 
-    try:
-        if key := _get_secret("GEMINI_API_KEY"):
+    errors = []
+    if key := _get_secret("GEMINI_API_KEY"):
+        try:
             return _run_gemini(key, system_text, messages, tavily_key)
-        if key := _get_secret("GROQ_API_KEY"):
-            return _run_openai_compat(OpenAI(api_key=key, base_url="https://api.groq.com/openai/v1"),
-                                      "llama-3.3-70b-versatile", system_text, messages, tavily_key)
-        if key := _get_secret("OPENAI_API_KEY"):
-            return _run_openai_compat(OpenAI(api_key=key), "gpt-4o-mini", system_text, messages, tavily_key)
-        return {"content": "⚠️ **Setup needed:** Add `GEMINI_API_KEY`, `GROQ_API_KEY`, or `OPENAI_API_KEY` to `.streamlit/secrets.toml`.", "error": True}
-    except Exception as e:
-        return {"content": f"⚠️ **API error:** `{e}`", "error": True}
+        except Exception as e:
+            errors.append(f"Gemini: {_clean_err(e)}")
+
+    if key := _get_secret("GROQ_API_KEY"):
+        try:
+            return _run_groq(key, system_text, messages, tavily_key)
+        except Exception as e:
+            errors.append(f"Groq: {_clean_err(e)}")
+
+    reason = " | ".join(errors) if errors else "No free API key configured"
+    print(f"[TechWise fallback triggered]: {reason}")
+    return _local_smart_fallback(messages, category, reason=reason)

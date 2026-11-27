@@ -93,22 +93,41 @@ code, .tw-mono {{ font-family: 'Geist Mono', monospace !important; }}
 [data-testid="stBottom"] > div {{ background: var(--tw-bg); }}
 
 /* ---------- chat messages ---------- */
-[data-testid="stChatMessage"] {{ background: transparent; padding: 6px 0; gap: 14px; }}
-[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {{ flex-direction: row-reverse; }}
+[data-testid="stChatMessage"] {{ background: transparent; padding: 8px 0; gap: 14px; align-items: flex-start; }}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {{
+  flex-direction: row !important;
+  justify-content: flex-end !important;
+  width: 100% !important;
+  gap: 0 !important;
+}}
 [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {{
-  background: linear-gradient(180deg,#232329,#1B1B20); border: 1px solid rgba(255,255,255,.1);
-  border-radius: 20px 20px 6px 20px; padding: 12px 16px; max-width: 520px; margin-left: auto; flex: 0 1 auto;
+  background: linear-gradient(180deg, #232329, #1B1B20);
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 18px 18px 4px 18px;
+  padding: 12px 18px !important;
+  width: fit-content !important;
+  max-width: 75% !important;
+  margin-left: auto !important;
+  margin-right: 0 !important;
+  flex: 0 1 auto !important;
+  overflow: visible !important;
 }}
-[data-testid="stChatMessageAvatarUser"] {{ display: none; }}
+[data-testid="stChatMessageAvatarUser"] {{ display: none !important; }}
 [data-testid="stChatMessageContent"] p {{ font-size: 15px; line-height: 1.6; color: #D4D4D8; }}
-
-/* markdown tables from the model (system prompt asks for a parts table) */
-[data-testid="stChatMessageContent"] table {{
-  width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px;
-  background: var(--tw-surface); border: 1px solid var(--tw-line); border-radius: 16px; overflow: hidden;
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stMarkdownContainer"],
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stVerticalBlock"] {{
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 6px !important;
 }}
-[data-testid="stChatMessageContent"] th {{ color: var(--tw-faint); font-weight: 500; font-size: 12px; text-align: left; padding: 12px 14px; border: 0; }}
-[data-testid="stChatMessageContent"] td {{ padding: 10px 14px; border: 0; border-top: 1px solid rgba(255,255,255,.06); color: #C9C9CF; }}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] p {{
+  color: var(--tw-text) !important;
+  line-height: 1.5 !important;
+  margin: 0 !important;
+}}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] p + p {{
+  margin-top: 8px !important;
+}}
 
 /* ---------- reusable HTML pieces ---------- */
 .tw-surf {{

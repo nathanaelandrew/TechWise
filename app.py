@@ -1,5 +1,6 @@
 import streamlit as st
 import techwise_ui as ui
+import chat_db as db
 from techwise_backend import get_techwise_reply
 
 st.set_page_config(page_title="TechWise", page_icon="🖥️", layout="wide",
@@ -62,7 +63,8 @@ QUICK_STARTS = ["Gaming PC under ₱40K", "Laptop for coding", "Best GPU for my 
 # state
 ss = st.session_state
 ss.setdefault("page", "landing")
-ss.setdefault("messages", [])        # [{"role": "user"|"assistant", "content": str, "build": dict|None}]
+ss.setdefault("chat_id", None)
+ss.setdefault("messages", [])        # [{"role": "user"|"assistant", "content": str, "build": dict|None, "error": bool}]
 ss.setdefault("decoder_term", "GPU")
 ss.setdefault("category", None)
 
@@ -70,13 +72,27 @@ ss.setdefault("category", None)
 def go_chat(first_prompt: str | None = None) -> None:
     ss.page = "chat"
     if first_prompt:
+        ss.chat_id = None
+        ss.messages = []
+        ss.category = None
         ss.pending_prompt = first_prompt
 
 
 def new_chat() -> None:
+    ss.chat_id = None
     ss.messages = []
     ss.category = None
     ss.page = "chat"
+
+
+def _retry_last() -> None:
+    if len(ss.messages) >= 2:
+        ss.messages.pop()
+        last_user = ss.messages.pop()
+        if ss.chat_id:
+            db.pop_last_two_messages(ss.chat_id)
+        ss.pending_prompt = last_user["content"]
+        ss.retrying = True
 
 
 # render: build card
@@ -101,10 +117,10 @@ def render_build(build: dict) -> None:
 </tbody></table>""")
 
     shares = sorted(build["parts"], key=lambda p: -p[3])
-    alphas = [1, .78, .6, .46, .34, .24, .16]
-    bar = "".join(f'<span style="width:{p[3] / total * 100:.1f}%;background:rgba({accent_rgb},{alphas[i % 7]})"></span>'
+    alphas = [1, .82, .68, .55, .44, .34, .26, .19, .13]
+    bar = "".join(f'<span style="width:{p[3] / total * 100:.1f}%;background:rgba({accent_rgb},{alphas[min(i, 8)]})"></span>'
                   for i, p in enumerate(shares))
-    legend = "".join(f'<span><i style="background:rgba({accent_rgb},{alphas[i % 7]})"></i>{p[0]} '
+    legend = "".join(f'<span><i style="background:rgba({accent_rgb},{alphas[min(i, 8)]})"></i>{p[0]} '
                      f'<b class="tw-num" style="color:#EDEDEF">{round(p[3] / total * 100)}%</b></span>'
                      for i, p in enumerate(shares))
     html(f"""
@@ -121,7 +137,9 @@ def render_build(build: dict) -> None:
 <div class="tw-surf" style="padding:16px"><b style="font-size:13px">Compatibility check</b><div style="margin-top:8px">{checks}</div></div>
 <div class="tw-surf" style="padding:16px"><b style="font-size:13px">Upgrade path</b><div style="margin-top:8px">{ups}</div></div>
 </div>""")
-    st.write("Want me to add a monitor and peripherals, or tweak the budget?")
+    has_periph = any(p[0] in ("MON", "GEAR") for p in build["parts"])
+    st.write("Want me to adjust any component or tweak the budget?" if has_periph
+             else "Want me to add a monitor and peripherals, or tweak the budget?")
 
 
 # page: landing
@@ -222,9 +240,33 @@ def sidebar() -> None:
             if st.button(name, icon=icon, type="primary" if is_active else "secondary",
                          use_container_width=True, key=f"cat_{name}"):
                 ss.category = name
+                ss.chat_id = None
                 ss.messages = []
                 ss.pending_prompt = CATEGORY_PROMPTS[name]
                 st.rerun()
+
+        history = db.list_conversations(limit=10)
+        if history:
+            html('<div class="tw-side-label">Recent chats</div>')
+            for conv in history:
+                label = conv["title"] if len(conv["title"]) <= 22 else conv["title"][:21] + "…"
+                is_current = ss.chat_id == conv["id"]
+                c_btn, c_del = st.columns([5, 1], vertical_alignment="center")
+                if c_btn.button(label, icon=":material/chat_bubble_outline:",
+                                type="primary" if is_current else "secondary",
+                                use_container_width=True, key=f"hist_{conv['id']}"):
+                    ss.chat_id = conv["id"]
+                    ss.messages = db.get_messages(conv["id"])
+                    ss.category = conv["category"]
+                    ss.page = "chat"
+                    st.rerun()
+                if c_del.button("", icon=":material/delete:", help="Delete chat",
+                                use_container_width=True, key=f"del_{conv['id']}"):
+                    db.delete_conversation(conv["id"])
+                    if is_current:
+                        new_chat()
+                    st.rerun()
+
         html('<div class="tw-side-label">Navigate</div>')
         st.button("Home", icon=":material/home:", use_container_width=True,
                   on_click=lambda: ss.update(page="landing"))
@@ -245,9 +287,13 @@ def empty_state() -> None:
         st.slider("Budget", 20000, 150000, 40000, 5000, key="qs_budget", format="₱%d")
         use = st.pills("Mostly for", ["Gaming", "Programming", "Video editing", "School & office"], default="Gaming", key="qs_use")
         res = st.segmented_control("Target resolution", ["1080p", "1440p", "4K"], default="1080p", key="qs_res")
+        inc_periph = st.toggle("Include monitor & peripherals in budget", value=False, key="qs_periph")
         if st.button("Generate my build →", type="primary", use_container_width=True):
+            ss.chat_id = None
+            ss.messages = []
+            periph_txt = " including a monitor and peripherals" if inc_periph else ""
             ss.pending_prompt = (f"Build me a PC for {use or 'general use'} at {res or '1080p'} "
-                                 f"with a budget of ₱{ss.qs_budget:,}.")
+                                 f"with a budget of ₱{ss.qs_budget:,}{periph_txt}.")
             st.rerun()
 
 
@@ -282,23 +328,47 @@ def chat() -> None:
                 if m.get("build"):
                     render_build(m["build"])
                 if m.get("error") and idx == len(ss.messages) - 1 and len(ss.messages) >= 2:
-                    if st.button("↻ Retry", key=f"retry_{idx}"):
-                        ss.messages.pop()              # remove the error message
-                        last_user = ss.messages.pop()  # remove last prompt so it doesn't duplicate
-                        ss.pending_prompt = last_user["content"]
-                        st.rerun()
+                    st.button("↻ Retry", key=f"retry_{idx}", on_click=_retry_last)
 
         prompt = ss.pop("pending_prompt", None)
         if prompt:
+            is_retry = ss.pop("retrying", False)
+            if not ss.chat_id:
+                initial_title = ss.category or (prompt[:36] + ("…" if len(prompt) > 36 else ""))
+                ss.chat_id = db.create_conversation(initial_title, ss.category)
+            db.add_message(ss.chat_id, "user", prompt)
+
             ss.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
-            with st.chat_message("assistant", avatar=":material/memory:"), st.spinner("Thinking…"):
-                reply = get_techwise_reply(
-                    [{"role": m["role"], "content": m["content"]} for m in ss.messages],
-                    beginner_mode=ss.get("beginner", True),
-                    category=ss.get("category"),
-                )
+            with st.chat_message("assistant", avatar=":material/memory:"):
+                history = []
+                for m in ss.messages:
+                    txt = m["content"]
+                    if m.get("build"):
+                        parts_str = ", ".join(f"{k}: {p}" for k, p, _, _ in m["build"]["parts"])
+                        txt += f"\n[Previous recommended PC parts: {parts_str}]"
+                    history.append({"role": m["role"], "content": txt})
+
+                slot = st.empty()
+                with slot, st.spinner("Thinking again…" if is_retry else "Thinking…"):
+                    reply = get_techwise_reply(
+                        history,
+                        beginner_mode=ss.get("beginner", True),
+                        category=ss.get("category"),
+                    )
+                slot.empty()
+
+            db.add_message(
+                ss.chat_id,
+                "assistant",
+                reply["content"],
+                build=reply.get("build"),
+                is_error=reply.get("error", False),
+            )
+            if reply.get("build") and reply["build"].get("title"):
+                db.update_conversation_title(ss.chat_id, reply["build"]["title"])
+
             ss.messages.append({
                 "role": "assistant",
                 "content": reply["content"],
